@@ -6,6 +6,18 @@ from tkinter import filedialog, messagebox, ttk
 from pdfminer.high_level import extract_text
 from ebooklib import epub
 import re
+import fitz
+
+def extract_text(pdf_path):
+    doc = fitz.open(pdf_path)
+    text = ""
+    for page in doc:
+       
+        text += page.get_text("text") + "\n\n"  # Thêm \n\n giữa các trang
+    return text
+
+
+
 # Hàm chuyển đổi PDF sang EPUB với vòng loading
 def convert_pdf_to_epub(pdf_path, selected_font, progress_bar):
     try:
@@ -14,16 +26,65 @@ def convert_pdf_to_epub(pdf_path, selected_font, progress_bar):
         root.update_idletasks()
 
         # Trích xuất nội dung từ PDF (20%)
-       # Trích xuất nội dung từ PDF
         text = extract_text(pdf_path)
         if not text.strip():
             raise ValueError("Không thể trích xuất nội dung từ file PDF.")
         progress_bar['value'] = 20
         root.update_idletasks()
+        # Xuất văn bản trung gian ra file .txt để kiểm tra (30%)
+        output_dir = os.path.join(os.path.expanduser("~"), "Documents", "epub")
+        os.makedirs(output_dir, exist_ok=True)  # Tạo thư mục nếu chưa tồn tại
+        txt_path = os.path.join(output_dir, os.path.splitext(os.path.basename(pdf_path))[0] + "_raw.txt")
+        
 
-        # Xử lý văn bản để loại bỏ xuống dòng không mong muốn
-        text = re.sub(r'(?<!\n)\n(?!\n)', ' ', text)  # Thay \n đơn bằng khoảng trắng
-        text = re.sub(r'\n{2,}', '</p><p>', text)    # Thay \n\n bằng thẻ đoạn văn
+        # Lưu văn bản gốc với các ký tự xuống dòng hiển thị
+        text_with_visible_newlines = text.replace('\n', '/n')
+        with open(txt_path, 'w', encoding='utf-8') as f:
+            f.write(text_with_visible_newlines)
+        print(f"Đã xuất file văn bản trung gian: {txt_path}")
+        progress_bar['value'] = 30
+        root.update_idletasks()
+
+        # Bước 1: Xử lý tiêu đề đặc biệt
+        text = re.sub(
+            r'/n\s+/n(Giảng giải|Phần|Chương|Bài|Mục)\s+([^/]+?)(/n\s+/n|\Z)',
+            r'</p><h2>\1 \2</h2><p>',
+            text_with_visible_newlines,
+            flags=re.IGNORECASE
+        )
+
+        # Bước 2: Xử lý các đoạn xuống dòng kép (/n /n) - đây là ngắt đoạn thực sự
+        text = re.sub(r'/n\s+/n', '</p><p>', text)
+
+        # Bước 3: Xử lý các ngắt dòng đơn (/n)
+        # Chỉ tạo ngắt đoạn nếu dòng kết thúc bằng dấu câu và theo sau là khoảng trắng
+        text = re.sub(r'([.!?])\s+/n\s+', r'\1</p><p>', text)  # Dấu câu + khoảng trắng + /n + khoảng trắng
+        text = re.sub(r'([.!?])/n\s+', r'\1</p><p>', text)      # Dấu câu + /n + khoảng trắng
+
+        # Các trường hợp ngắt dòng đơn khác (không theo quy tắc trên) - thay thế bằng khoảng trắng
+        text = re.sub(r'/n', ' ', text)
+
+        # Bước 4: Xử lý khoảng trắng thừa
+        text = re.sub(r'\s+', ' ', text)
+
+        # Bước 5: Xử lý ngắt đoạn theo dấu câu trong văn bản
+        # Chỉ tạo ngắt đoạn nếu dấu câu theo sau bởi khoảng trắng (không phải là viết tắt như "Dr.")
+        # # Tìm kiếm dấu câu và theo sau bởi ít nhất một khoảng trắng
+        # text = re.sub(r'([.!?])\s+(?!<p>|[A-Z][a-z]\.)', r'\1</p><p>', text)
+         # Tìm kiếm dấu câu và theo sau bởi chính xác 5 khoảng trắng
+        text = re.sub(r'([.!?)\s{5}(?!<p>|[A-Z][a-z]\.)', r'\1</p><p>', text)
+
+        # Bước 6: Đảm bảo bắt đầu và kết thúc với thẻ HTML phù hợp
+        if not text.startswith('<p>') and not text.startswith('<h2>'):
+            text = f'<p>{text}'
+        if not text.endswith('</p>'):
+            text = f'{text}</p>'
+
+        # Bước 7: Dọn dẹp thẻ HTML
+        text = re.sub(r'<p>\s*</p>', '', text)  # Loại bỏ thẻ p rỗng
+        text = re.sub(r'</p>\s*<p>', '</p><p>', text)  # Chuẩn hóa khoảng cách
+        text = re.sub(r'</h2><p></p>', '</h2><p>', text)  # Loại bỏ thẻ p rỗng sau h2
+        text = re.sub(r'<p>\s*</h2>', '</h2>', text)  # Sửa thẻ p trước h2
 
         # Tạo sách EPUB
         book = epub.EpubBook()
@@ -48,6 +109,7 @@ def convert_pdf_to_epub(pdf_path, selected_font, progress_bar):
             font-family: "{selected_font}";
             src: url("fonts/{selected_font}-Regular.ttf");
         }}
+       
         body {{
             font-family: "{selected_font}", sans-serif;
             line-height: 1.5;
